@@ -1,0 +1,837 @@
+---
+title: "Médicos Por La Salud" 
+# author: "Hackers"
+# date: "February 16, 2020"
+output: 
+  flexdashboard::flex_dashboard:
+    #logo: /Users/sharaguilar/Desktop/Code for Venezuela/logo.png
+    source_code: embed
+    vertical_layout: scroll
+    #theme: yeti
+    runtime: shiny
+---
+
+
+``` {js}
+// Inverse color of navigation bar.
+$('.navbar-inverse').removeClass('navbar-inverse').addClass('navbar-default');
+```
+
+```{r setup, include=FALSE}
+# Load necessary packages. 
+library(flexdashboard) # Dashboard package
+library(highcharter) # Interactive data visualizations
+library(plotly) # Interactive data visualizations
+library(viridis) # Color gradients
+library(tidyverse) # Metapackge
+library(countrycode) # Converts country names/codes
+library(rjson) # JSON reader
+library(crosstalk) # Provides interactivity for HTML widgets
+library(DT) # Displaying data tables
+library(magrittr)
+library(leaflet)
+library(plyr)
+library(rhandsontable)
+library(ggplot2)
+library(here)
+library(widgetframe)
+library(corrplot)
+```
+
+```{r include=FALSE}
+# Library dependencies
+#if (!require("bigrquery")) install.packages("bigrquery")
+library(bigrquery)
+
+# Authenticate user
+bq_auth(path="https://storage.googleapis.com/angostura-public/hult-hackathon-key.json")
+
+# SQL request and store into dataframe
+project_id <- "event-pipeline"
+sql <- 'SELECT * from `angostura_dev.eh_health_survey_response`'
+df <- query_exec(sql, project_id, use_legacy_sql = FALSE)
+
+# Fix the names of some of the countries in our data to match the country names 
+venez <- df %>%
+  mutate(federal_entity = recode_factor(federal_entity, "Anzo√°tegui" = "Anzoátegui"),
+         federal_entity = recode_factor(federal_entity, "Bol√≠var" = "Bolivar"),
+         federal_entity = recode_factor(federal_entity, "Falc√≥n" = "Falcón"),
+         federal_entity = recode_factor(federal_entity, "Gu√°rico" = "Guárico"),
+         federal_entity = recode_factor(federal_entity, "M√©rida" = "Mérida"),
+         federal_entity = recode_factor(federal_entity, "T√°chira" = "Táchira"))
+         
+#Fix dates
+date <- as.character(venez$report_week)
+temp <- strsplit(date, " ")
+mat  <- matrix(unlist(temp), ncol=3, byrow=TRUE)
+
+venez$week <- as.integer(mat[,1])
+venez$year <- as.integer(mat[,3])
+venez$timeseries <- (venez$week-1)/52 + venez$year #this is a proportion of year
+#venez$timeseries
+
+# Empty strings are formatted as NAs
+venez[venez == ""] = NA
+
+#Flag NAs
+for(i in 1:ncol(venez)) {
+  if(sum(is.na(venez[i])) > 0) {
+    venez[, as.character(paste0("m_", colnames(venez)[i]))] = ifelse(test = is.na(venez[i]), yes = 1, no = 0)
+  }
+}
+
+
+
+```
+
+```{r include=FALSE}
+# Missing values are flagged
+for(i in 1:ncol(venez)) {
+  if(sum(is.na(venez[i])) > 0) {
+    venez[, as.character(paste0("m_", colnames(venez)[i]))] = ifelse(test = is.na(venez[i]), yes = 1, no = 0)
+    }
+}
+
+#Outliers Flagged - Thresholds
+out_er_staff_specialist_day_on_call = 20
+out_er_staff_nurse_day_on_call = 50
+out_er_staff_non_professional_nurse_day_on_call = 20
+out_er_staff_mic_day_on_call = 11
+out_er_staff_specialist_night_on_call = 14
+out_er_staff_mic_night_on_call = 10
+out_op_pavilions_count = 10
+out_er_staff_nurse_night_on_call  = 30
+out_er_staff_non_professional_nurse_night_on_call = 10
+out_power_outage_avg_failures_per_day = 5
+
+#Outliers Created
+venez$out_er_staff_specialist_day_on_call = ifelse(venez$er_staff_specialist_day_on_call > out_er_staff_specialist_day_on_call , 1, 0)
+
+venez$out_er_staff_nurse_day_on_call = ifelse(venez$er_staff_nurse_day_on_call > out_er_staff_nurse_day_on_call , 1, 0)
+
+venez$out_er_staff_non_professional_nurse_day_on_call = ifelse(venez$er_staff_non_professional_nurse_day_on_call > out_er_staff_non_professional_nurse_day_on_call , 1, 0)
+
+venez$out_er_staff_mic_day_on_call = ifelse(venez$er_staff_mic_day_on_call > out_er_staff_mic_day_on_call , 1, 0)
+
+venez$out_er_staff_specialist_night_on_call = ifelse(venez$er_staff_specialist_night_on_call > out_er_staff_specialist_night_on_call , 1, 0)
+
+venez$out_er_staff_mic_night_on_call = ifelse(venez$er_staff_mic_night_on_call > out_er_staff_mic_night_on_call , 1, 0)
+
+venez$out_op_pavilions_count = ifelse(venez$op_pavilions_count > out_op_pavilions_count , 1, 0)
+
+venez$out_er_staff_nurse_night_on_call = ifelse(venez$er_staff_nurse_night_on_call > out_er_staff_nurse_night_on_call , 1, 0)
+
+venez$out_er_staff_non_professional_nurse_night_on_call = ifelse(venez$er_staff_non_professional_nurse_night_on_call > out_er_staff_non_professional_nurse_night_on_call , 1, 0)
+
+venez$out_power_outage_avg_failures_per_day = ifelse(venez$power_outage_avg_failures_per_day > out_power_outage_avg_failures_per_day , 1, 0)
+
+# First a subset including only resources data is created
+venez_avail = venez[,c("hospital_code","er_avail_adrenalin", "er_avail_atropine",
+                       "er_avail_dopamine",                                
+                       "er_avail_cephalosporins_betalactams",              
+                       "er_avail_aminoglycosides_quinolone",               
+                       "er_avail_vancomycin_clindamycin",                  
+                       "er_avail_lidocaine",                               
+                       "er_avail_minor_opioids",                           
+                       "er_avail_major_opioids",                           
+                       "er_avail_iv_fluids",                               
+                       "er_avail_diazepam_dph",                            
+                       "er_avail_heparin",
+                       "er_avail_steroids",                                
+                       "er_avail_insulin",                                 
+                       "er_avail_asthma",                                  
+                       "er_avail_blood_pressure",                          
+                       "er_avail_defibrillator",                           
+                       "er_avail_ott_intubation",                          
+                       "er_avail_catheter",                                
+                       "er_avail_oxygen_suction"      )]
+
+for(i in 2:ncol(venez_avail)) {
+  venez_avail[, as.character(paste0("never_", colnames(venez_avail)[i]))] = ifelse(test = venez_avail[i] == "Nunca ha existido", yes = 1, no = 0)
+    
+}
+
+venez = cbind(venez, venez_avail[,22:41])
+
+venez$possible_resources = 20 - rowSums(venez[,c("never_er_avail_adrenalin",   
+                                            "never_er_avail_atropine",
+                                            "never_er_avail_dopamine",                          
+                                            "never_er_avail_cephalosporins_betalactams",        
+                                            "never_er_avail_aminoglycosides_quinolone",         
+                                            "never_er_avail_vancomycin_clindamycin",            
+                                            "never_er_avail_lidocaine",                         
+                                            "never_er_avail_minor_opioids",                      
+                                            "never_er_avail_major_opioids",                    
+                                            "never_er_avail_iv_fluids",                          
+                                            "never_er_avail_diazepam_dph",                    
+                                            "never_er_avail_heparin",
+                                            "never_er_avail_steroids",                        
+                                            "never_er_avail_insulin",                          
+                                            "never_er_avail_asthma",                             
+                                            "never_er_avail_blood_pressure",                     
+                                            "never_er_avail_defibrillator",                      
+                                            "never_er_avail_ott_intubation",                     
+                                            "never_er_avail_catheter",                           
+                                            "never_er_avail_oxygen_suction")])
+
+
+hospital_code = c("ANZ000",
+                  "ANZ002",
+                  "BAR000",
+                  "LAR000",
+                  "DCA000",
+                  "DCA001",
+                  "DCA002",
+                  "DCA003",
+                  "DCA004",
+                  "DCA005",
+                  "DCA006",
+                  "DCA007",
+                  "MIR000",
+                  "BOL000",
+                  "BOL001",
+                  "DEL000",
+                  "SUC000",
+                  "ANZ001",
+                  "CAR000",
+                  "POR000",
+                  "ARA000",
+                  "MIR001",
+                  "VAR000",
+                  "ZUL000",
+                  "ZUL001",
+                  "ARA001",
+                  "ARA002",
+                  "MON000",
+                  "MER000",
+                  "NES000",
+                  "FAL000",
+                  "COJ000",
+                  "TAC000",
+                  "TAC001",
+                  "YAR000",
+                  "AMA000",
+                  "APU000",
+                  "GUA000",
+                  "CAR001",
+                  "TRU000"
+)
+
+hospital_name = c(
+  
+  "Hospital Universitario Dr. Luis Razzetti. Anzoátegui",
+  "Hospital de Guaraguao. Anzoátegui",
+  "Hospital Dr. Luis Razetti. Barinas",
+  "Hospital Universitario Dr. Antonio María Pineda. Lara",
+  "Hospital Militar. Dtto. Capital",
+  "Hospital Vargas. Dtto. Capital",
+  "Hospital JM de los Ríos. Dtto. Capital",
+  "Hospital Universitario de Caracas. Dtto. Capital",
+  "Maternidad Concepción Palacios. Dtto. Capital",
+  "Hospital Dr. Miguel Pérez Carreño. Dtto. Capital",
+  "Hospital Magallanes de Catia. Dtto. Capital",
+  "Unknown",
+  "Hospital Domingo Luciani. Miranda",
+  "Hospital Ruiz y Páez. Bolívar",
+  "Hospital Uyapar. Bolívar",
+  "Hospital Dr. Luis Razetti. Delta Amacuro",
+  "Hospital Antonio Patricio de Alcalá. Sucre",
+  "Hospital Felipe Guevara Rojas. Anzoátegui",
+  "Hospital Dr. Ángel Larrralde. Carabobo",
+  "Hospital Dr. Miguel Oraa. Portuguesa",
+  "Hospital José María Benítez. Aragua",
+  "Hospital General Dr. Victorino Santaella",
+  "Hospital Dr. José María Vargas. Vargas",
+  "Hospital Universitario de Maracaibo. Zulia",
+  "Hospital General del Sur",
+  "Hospital Coronel Elbano Paredes Vivas. Aragua",
+  "Hospital Central de Maracay. Aragua",
+  "Hospital Universitario Dr. Manuel Núñez Tovar. Monagas",
+  "Hospital Universitario de los Andes. Mérida",
+  "Hospital Dr. Luis Ortega. Nueva Esparta",
+  "Hospital Dr. Alfredo Van Grieken. Falcón",
+  "Hospital General de San Carlos. Cojedes",
+  "Hospital Patrocinio Peñuela. Táchira",
+  "Hospital Central de San Cristóbal. Táchira",
+  "Hospital Plácido Rodriguez Rivero , Yaracuy",
+  "Hospital Dr. José Gregorio Hernández. Amazonas",
+  "Hospital Dr. Pablo Acosta Ortiz. Apure",
+  "Hospital Dr. Israel Ranuarez Balza. Guárico",
+  "Ciudad Hospitalaria Enrique Tejera. Carabobo",
+  "Hospital Universitario Dr. Pedro Emilio Carrillo. Trujillo"
+)
+
+city = c(
+  
+  "Barcelona",
+  "Barcelona",
+  "Barinas",
+  "Barquisimeto",
+  "Caracas",
+  "Caracas",
+  "Caracas",
+  "Caracas",
+  "Caracas",
+  "Caracas",
+  "Caracas",
+  "Caracas",
+  "Caracas",
+  "Ciudad Bolivar",
+  "Ciudad Guayana",
+  "Ciudad Guayana",
+  "Cumana",
+  "El Tigre",
+  "Guacara",
+  "Guanare",
+  "La Victoria",
+  "Los Teques",
+  "Maracaibo",
+  "Maracaibo",
+  "Maracaibo",
+  "Maracay",
+  "Maracay",
+  "Maturin",
+  "Merida",
+  "Porlamar",
+  "Punto Fijo",
+  "San Carlos",
+  "San Cristobal",
+  "San Cristobal",
+  "San Felipe",
+  "San Fernando de Apure",
+  "San Fernando de Apure",
+  "San Juan de los Morros",
+  "Valencia",
+  "Valera"
+  
+)
+
+municipality_population = c(
+  
+  506016,
+  506016,
+  427863,
+  1168511,
+  2090479,
+  2090479,
+  2090479,
+  2090479,
+  2090479,
+  2090479,
+  2090479,
+  2090479,
+  2090479,
+  440396,
+  950012,
+  950012,
+  451448,
+  2671,
+  198883,
+  235997,
+  46682,
+  302006,
+  1776686,
+  1776686,
+  1776686,
+  475175,
+  475175,
+  623400,
+  299191,
+  28993,
+  292427,
+  73082,
+  289852,
+  289852,
+  130411,
+  231595,
+  231595,
+  168459,
+  943844,
+  171854
+  
+)
+
+rural_urban = c(
+  
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Rural",
+  "Urban ",
+  "Urban ",
+  "Rural",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Rural",
+  "Rural",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Rural",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Rural   ",
+  "Urban ",
+  "Urban ",
+  "Urban ",
+  "Urban "
+  
+)
+
+
+data_pop = data.frame(hospital_code, hospital_name, city, municipality_population, rural_urban)
+
+#setwd("/Users/sharaguilar/Desktop/Code for Venezuela/Sample")
+#data_pop = read.csv("data_pop.csv")
+
+venez = merge(x = venez, y = data_pop, by = "hospital_code", all.x = T)
+
+
+#Format drugs to numerical columns
+mylist = c('er_avail_adrenalin','er_avail_atropine','er_avail_dopamine','er_avail_cephalosporins_betalactams',
+           'er_avail_aminoglycosides_quinolone','er_avail_vancomycin_clindamycin','er_avail_lidocaine',
+           'er_avail_minor_opioids','er_avail_major_opioids','er_avail_iv_fluids','er_avail_diazepam_dph',
+           'er_avail_heparin','er_avail_steroids','er_avail_insulin','er_avail_asthma','er_avail_blood_pressure',
+           'er_avail_defibrillator','er_avail_ott_intubation','er_avail_catheter','er_avail_oxygen_suction')
+myvars <- names(venez) %in% mylist
+newdata <- venez[myvars]
+lst <- unique(venez$er_avail_adrenalin)
+lst <- lst[order(lst)]
+
+#Start loop ---------------------------------------------------------------------------------------
+for(i in 1:ncol(newdata)){
+  newdata[,i] <- gsub(lst[5],3,newdata[,i])
+  newdata[,i] <- gsub(lst[2],2,newdata[,i])
+  newdata[,i] <- gsub(lst[1],1,newdata[,i])
+  newdata[,i] <- gsub(lst[3],0,newdata[,i])
+  newdata[,i] <- gsub(lst[4],0,newdata[,i])
+  venez[,mylist[i]] <- as.numeric(newdata[,i])
+}
+venez[myvars]
+venez$resouces_sum <- rowSums(venez[, mylist])
+
+#Testing duplications
+venez$key <- as.character(paste(venez$report_week,venez$hospital_code))
+venez$uniquekey <- as.character(paste(venez$timestamp,venez$report_week,venez$hospital_code))
+
+dupdf <- venez[order(venez$timestamp),]
+dupdf$key <- as.character(paste(dupdf$report_week,dupdf$hospital_code))
+dupdf$uniquekey <- as.character(paste(dupdf$timestamp,dupdf$report_week,dupdf$hospital_code))
+library(plyr)
+duplicatesmatrix <- matrix(, nrow = nrow(dupdf), ncol = 0)
+duplicates <- as.data.frame(duplicatesmatrix)
+#duplicates$hospital_code <- dupdf$hospital_code
+duplicates$key <- as.character(dupdf$key) 
+duplicates <- ddply(duplicates,.(duplicates$key),nrow)
+duplicates <- duplicates[which(duplicates$V1 > 1),]
+
+#Testing duplications --------------------------------------------------------
+venez$key <- as.character(paste(venez$report_week,venez$hospital_code))
+venez$uniquekey <- as.character(paste(venez$timestamp,venez$report_week,venez$hospital_code))
+
+dupdf <- venez[order(venez$timestamp),]
+dupdf$key <- as.character(paste(dupdf$report_week,dupdf$hospital_code))
+dupdf$uniquekey <- as.character(paste(dupdf$timestamp,dupdf$report_week,dupdf$hospital_code))
+
+duplicatesmatrix <- matrix(, nrow = nrow(dupdf), ncol = 0)
+duplicates <- as.data.frame(duplicatesmatrix)
+#duplicates$hospital_code <- dupdf$hospital_code
+duplicates$key <- as.character(dupdf$key) 
+duplicates <- ddply(duplicates,.(duplicates$key),nrow)
+duplicates <- duplicates[which(duplicates$V1 > 1),]
+
+#Group by hospital codes and count
+#duplicatecount <- duplicates %>% group_by(hospital_code) %>% tally()
+key <- as.character(duplicates$'duplicates$key')
+temp <- strsplit(key, " ")
+mat  <- matrix(unlist(temp), ncol=4, byrow=TRUE)
+
+duplicates$hospital_code <- as.character(mat[,4])
+duplist <- duplicates$'duplicates$key'
+
+# Data cleanliness index is created
+# First an empty data frame for hospitals is created
+
+hosp_df = data.frame(hospital_code = unique(venez$hospital_code))
+
+# rrt avail is transformed into a binary variable
+venez$rrt_avail = ifelse(venez$rrt_avail == "No", yes = 1, no = 0)
+
+#A data frame is created counting negative responses for rtt_avail
+rtt_avail = aggregate(venez$rrt_avail, by = list(venez$hospital_code), FUN = sum)
+colnames(rtt_avail) = c("hospital_code", "rtt_neg")
+
+# nutr avail is transformed into a binary variable
+venez$nutr_avail = ifelse(venez$nutr_avail == "No", yes = 1, no = 0)
+
+#A data frame is created counting negative responses for nutr_avail
+nutr_avail = aggregate(venez$nutr_avail, by = list(venez$hospital_code), FUN = sum)
+colnames(nutr_avail) = c("hospital_code", "nutr_neg")
+
+# data frames are merged
+hosp_df = merge(x = hosp_df, y = rtt_avail, by = "hospital_code", all.x = T)
+hosp_df = merge(x = hosp_df, y = nutr_avail, by = "hospital_code", all.x = T)
+
+# rtt and nutr avail vars are one-hot coded and max responses is calculated
+hosp_df$rtt_neg = ifelse(hosp_df$rtt_neg > 0, yes = 1, no = 0)
+hosp_df$nutr_neg = ifelse(hosp_df$nutr_neg > 0, yes = 1, no = 0)
+hosp_df$max_responses = ifelse(test = hosp_df$nutr_neg == 0 & hosp_df$rtt_neg == 0,
+                              yes = 121, no = ifelse(test = hosp_df$nutr_neg == 0 & hosp_df$rtt_neg == 1,                                                     yes = 97, no = ifelse(test = hosp_df$nutr_neg == 1 & hosp_df$rtt_neg == 0,
+                                                                           yes = 114, no = 90)))
+# Total observations are recorded
+obs_count = aggregate(venez$hospital_code, by = list(venez$hospital_code), FUN = length)
+colnames(obs_count) = c("hospital_code", "obs_count")
+dupl_count = aggregate(duplicates$hospital_code, by = list(duplicates$hospital_code), FUN = length)
+colnames(dupl_count) = c("hospital_code", "dupl")
+
+# data frames are merged
+hosp_df = merge(x = hosp_df, y = obs_count, by = "hospital_code", all.x = T)
+
+# Ideal entries are calculated
+hosp_df$ideal_entries = hosp_df$max_responses * hosp_df$obs_count
+
+# Total entries are identified
+total_entries = data.frame(hospital_code = unique(venez$hospital_code))
+empty_vec = data.frame()
+for (i in 1:nrow(total_entries)) {
+t = sum(sapply(venez[venez$hospital_code == as.character(total_entries$hospital_code[i]), 1:122],
+               function(x) sum(is.na(x))))
+empty_vec = rbind(empty_vec, t)
+}
+
+hosp_df = cbind(hosp_df, empty_vec)
+colnames(hosp_df) = c("hospital_code", "rtt_neg", "nutr_neg", 
+                      "max_responses", "obs_count", "ideal_entries",
+                      "total_entries" )
+
+hosp_df = merge(x = hosp_df, y = dupl_count, by = "hospital_code", all.x = T)
+hosp_df$dupl = ifelse(is.na(hosp_df$dupl), 0, hosp_df$dupl)
+hosp_df$proportion = hosp_df$obs_count * (50/59)
+hosp_df$dupl_crit = ifelse(hosp_df$dupl > 0, 10, 0)
+hosp_df$response_prop = hosp_df$total_entries * (40/hosp_df$ideal_entries)
+hosp_df$data_quality = rowSums(hosp_df[,c("proportion", "dupl_crit", "response_prop")])
+
+#########Removing duplicates and sorted by timestamp
+venez <- venez[order(venez$timestamp),]
+deletelist <- c()
+
+for (i in 1:length(duplist)){
+  testdf <- venez[which(venez$key == duplist[i]),]
+  for (j in 1:nrow(testdf)){
+    if (j!=nrow(testdf))
+    {deletelist <- append(deletelist, testdf[j,"uniquekey"] ,after = length(deletelist))}
+  }
+}
+venez <- venez[-which(venez$uniquekey %in% deletelist),]
+nrow(venez)
+
+#Bed variables --------------------------------------------------
+stat_beds <- as.data.frame(quantile(venez$op_beds_count, c(0.25, 0.5, 0.75)),axis=0)
+bed1 <- as.numeric(stat_beds[1,'quantile(venez$op_beds_count, c(0.25, 0.5, 0.75))'])
+bed2 <- as.numeric(stat_beds[2,'quantile(venez$op_beds_count, c(0.25, 0.5, 0.75))'])
+bed3 <- as.numeric(stat_beds[3,'quantile(venez$op_beds_count, c(0.25, 0.5, 0.75))'])
+
+#Population variable ----------------------------------------------
+stat_pop <- as.data.frame(quantile(venez$municipality_population, c(0.25, 0.5, 0.75)))
+pop1 <- as.numeric(stat_pop[1,'quantile(venez$municipality_population, c(0.25, 0.5, 0.75))'])
+pop2 <- as.numeric(stat_pop[1,'quantile(venez$municipality_population, c(0.25, 0.5, 0.75))'])
+pop3 <- as.numeric(stat_pop[1,'quantile(venez$municipality_population, c(0.25, 0.5, 0.75))'])
+
+#Urban variable ----------------------------------------------
+venez$urban <- ifelse(venez$rural_urban == "Urban ", yes =1, no = 0)
+
+#Score based on quartiles ---------------------------------------------------------------------------------------------
+venez$bed_score <- ifelse(venez$op_beds_count < bed1, yes =1.0, no = ifelse(venez$op_beds_count < bed2, 
+                                                                          yes = 1.02, no = ifelse(venez$op_beds_count < bed3,
+                                                                                               yes = 1.04, no = 1.05 )))
+venez$pop_score <- ifelse(venez$municipality_population < pop1, yes =1.0, no = ifelse(venez$municipality_population < pop2, 
+                                                                          yes = 1.02, no = ifelse(venez$municipality_population < pop3,
+                                                                                                  yes = 1.04, no = 1.05 )))
+venez$urban_score <- ifelse(venez$urban == 1, yes =1.03, no=1/1.03)
+venez$scarcity_metrics <- 100-((venez$resouces_sum / 60)*100)
+venez$scarcity_metrics <- venez$scarcity_metrics * venez$bed_score * venez$pop_score * venez$urban_score 
+
+```
+
+<style>
+.colored {
+  background-color: #FAFAFA;
+}
+</style>
+
+
+Scarcity
+=======================================================================
+
+Row {data-width=150}
+--------------------------------------
+### Avg Scarcity Score
+```{r}
+avg_scarcity = round(mean(venez$scarcity_metrics),2)
+valueBox(value = avg_scarcity,icon = "fa-user-plus",caption = "Avg Scarcity Score",color = "crimson")
+
+#renderValueBox({
+  #avg_scarcity <- venez%>%
+    #filter(federal_entity == input$federal_entity[i]) %>%
+    #round(mean(venez$scarcity_metrics),2)
+    #valueBox(avg_scarcity,icon = "fa-user-plus",caption = "Avg Scarcity Score",color = #"crimson")
+#})
+
+
+
+```
+
+### Avg Operative Beds
+```{r}
+avg_opbed = round(mean(venez$op_beds_count),2)
+valueBox(value = avg_opbed,icon = "fa-bed",caption = "Avg Operative Beds",color = "gray")
+```
+
+### Avg Data Quality
+```{r}
+avg_dataq = round(mean(hosp_df$data_quality),2)
+valueBox(value = avg_dataq,icon = "fa-user-plus",caption = "Avg Data Quality",color = "gray")
+```
+
+Row
+--------------------------------------
+
+### Hospital Map
+
+```{r fig.height=5}
+federal_list <- unique(venez$federal_entity)
+federal_list <- federal_list[order(federal_list)]
+
+#LOOP THROUGH THE FEDERAL LIST TO FILL IN THE SCARCITY
+scarcelist <- c()
+for (i in 1:length(federal_list)){
+test <- venez %>%
+  filter(federal_entity == federal_list[i])
+  scarcelist <- append(scarcelist, round(mean(test$scarcity_metrics),2),after = length(scarcelist))
+}
+
+m <- leaflet() %>%
+  addTiles() %>%
+  addMarkers(lng=-67.61721, lat=5.65934, popup=paste(federal_list[1]," averages ",scarcelist[1]))%>%
+  addMarkers(lng=-64.65617, lat=10.12698, popup=paste(federal_list[2]," averages ",scarcelist[2]))%>%
+  addMarkers(lng=-67.47032, lat=7.89297, popup=paste(federal_list[3]," averages ",scarcelist[3]))%>%
+  addMarkers(lng=-67.57431, lat=10.20267, popup=paste(federal_list[4]," averages ",scarcelist[4]))%>%
+  addMarkers(lng=-70.174713, lat=8.59349, popup=paste(federal_list[5]," averages ",scarcelist[5]))%>%
+  addMarkers(lng=-72.439468, lat=7.81257, popup=paste(federal_list[6]," averages ",scarcelist[6]))%>%
+  addMarkers(lng=-68.004433, lat=10.17378, popup=paste(federal_list[7]," averages ",scarcelist[7]))%>%
+  addMarkers(lng=-62.05823, lat=9.06433, popup=paste(federal_list[8]," averages ",scarcelist[8]))%>%
+  addMarkers(lng=-66.903603, lat=10.480594, popup=paste(federal_list[9]," averages ",scarcelist[9]))%>%
+  addMarkers(lng=-69.664291, lat=11.41295, popup=paste(federal_list[10]," averages ",scarcelist[10]))%>%
+  addMarkers(lng=-67.35401, lat=9.90101, popup=paste(federal_list[11]," averages ",scarcelist[11]))%>%
+  addMarkers(lng=-69.312943, lat=10.07628, popup=paste(federal_list[12]," averages ",scarcelist[12]))%>%
+  addMarkers(lng=-71.181229, lat=8.58205, popup=paste(federal_list[13]," averages ",scarcelist[13]))%>%
+  addMarkers(lng=-67.038071, lat=10.34385, popup=paste(federal_list[14]," averages ",scarcelist[14]))%>%
+  addMarkers(lng=-63.170029, lat=9.74996, popup=paste(federal_list[15]," averages ",scarcelist[15]))%>%
+  addMarkers(lng=-63.86791, lat=11.02335, popup=paste(federal_list[16]," averages ",scarcelist[16]))%>%
+  addMarkers(lng=-69.748863, lat=9.04243, popup=paste(federal_list[17]," averages ",scarcelist[17]))%>%
+  addMarkers(lng=-64.18031, lat=10.44786, popup=paste(federal_list[18]," averages ",scarcelist[18]))%>%
+  addMarkers(lng=-72.228279, lat=7.76801, popup=paste(federal_list[19]," averages ",scarcelist[19]))%>%
+  addMarkers(lng=-66.928627, lat=10.59952, popup=paste(federal_list[20]," averages ",scarcelist[20]))%>%
+  addMarkers(lng=-71.676628, lat=10.69908, popup=paste(federal_list[21]," averages ",scarcelist[21]))
+m
+
+```
+
+
+Column {.sidebar}
+-----------------------------------------------------------------------
+
+**Select filters here:**
+
+```{r}
+selectInput("federal_entity", "Federal Entity", choices = venez$federal_entity)
+selectInput("year", "Year", choices = venez$year)
+sliderInput("week", label = "Week:",
+            min = min(venez$week), max = 52, value = 1, step = 0.2)
+
+radioButtons("hospital_type", "Hospital", choices = unique(venez$hospital_type))
+```
+
+Interactions Sandbox
+========================================================================
+
+ Column {.tabset .tabset-fade data-width=700 .colored }
+-----------------------------------------------------------------------
+
+### Boxplots {.no-padding}
+
+```{r}
+
+inputPanel(
+selectInput("x_box", "Dependent Variable", choices = c("federal_entity",
+                                           "hospital_code",
+                                           "hospital_type")),
+selectInput("y_box", "Independent Variable", choices = c("mortality_hospital_failure_cardiovascular_count",
+                                           "er_avail_dopamine",
+                                           "er_avail_asthma"))
+)
+
+renderPlot({
+  p = ggplot(data = venez, aes_string(x = input$x_box, y = input$y_box)) +
+  geom_boxplot()
+
+p
+  
+})
+
+```
+
+### Scatterplots
+    
+```{r}
+
+inputPanel(
+  
+selectInput("scat_x", "Dependent Variable", choices = c("mortality_hospital_failure_cardiovascular_count",
+                                           "er_avail_dopamine",
+                                           "er_avail_asthma")),
+selectInput("scat_y", "Independent Variable", choices = c("mortality_hospital_failure_cardiovascular_count",
+                                           "er_avail_dopamine",
+                                           "er_avail_asthma"))
+
+)
+renderPlot({
+p = ggplot(data = venez, aes_string(x = input$scat_x, y = input$scat_y)) +
+  geom_point()
+p
+  
+})
+
+```
+
+### Histograms
+    
+```{r}
+inputPanel(
+
+selectInput("hist_x", "Variable", choices = c("mortality_hospital_failure_cardiovascular_count",
+                                           "er_avail_dopamine",
+                                           "er_avail_asthma",
+                                           "op_beds_count"))
+
+)
+
+renderPlot({
+  
+p = ggplot(data = venez, aes_string(x = input$hist_x)) +
+  geom_histogram()
+
+p
+
+  
+})
+
+```
+
+### Line Charts
+    
+```{r}
+
+inputPanel(
+selectInput("line_x", "X variable", choices = c("timestamp")),
+
+selectInput("line_y", "Y variable", choices = c("mortality_hospital_failure_cardiovascular_count",
+                                           "er_avail_dopamine",
+                                           "er_avail_asthma"))
+)
+renderPlot({
+  p = ggplot(data = venez, aes_string(x = input$line_x, y = input$line_y,
+                                    group = 1)) +
+  geom_line()
+p
+
+})
+
+```
+
+### Stacked Bars
+    
+```{r}
+inputPanel(
+  
+selectInput("stack_x", "X variable", choices = c("federal_entity",
+                                           "hospital_code",
+                                           "hospital_type")),
+selectInput("stack_y", "Y variable", choices = c("rural_urban"))
+
+)
+
+renderPlot({
+p = ggplot(data = venez, aes_string(fill=input$stack_y, x=input$stack_x,
+                                    y = 1)) + 
+  geom_bar(position="fill", stat="identity")
+p
+  
+})
+
+```
+
+Modeling Sandbox
+========================================================================
+
+ Column {.tabset .tabset-fade data-width=700 .colored }
+-----------------------------------------------------------------------
+
+### Chi Square {.no-padding}
+
+```{r}
+inputPanel(
+  
+selectInput("chi_x", "X variable", choices = c("federal_entity",
+                                           "hospital_code",
+                                           "hospital_type")),
+selectInput("chi_y", "Y variable", choices = c("rural_urban"))
+
+)
+
+#comparison = table(input$chi_x, input$chi_y) 
+#chisq <- chisq.test(comparison)
+
+#Visualize the contribution in percentage --------------------------------
+#contrib <- 100*chisq$residuals^2/chisq$statistic
+#corrplot(contrib,is.cor=FALSE)
+#Print p-value ------------------------------------------
+#print(paste("The p-value is",chisq$p.value))
+
+```
+
+
+
+Data Quality
+========================================================================
+
+Column {data-width=375}
+-----------------------------------------------------------------------
+
+### Data Table
+    
+```{r}
+renderDT({
+  hosp_df
+})
+```
+
+
